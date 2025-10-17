@@ -1,0 +1,227 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+<meta charset="UTF-8">
+<title>Cambio de Turnos</title>
+<style>
+body{font-family:Arial;margin:20px;}
+h1,h2{margin-top:20px;}
+table{border-collapse:collapse;width:100%;margin-bottom:20px;}
+th,td{border:1px solid #ddd;padding:8px;text-align:center;}
+th{background:#f2f2f2;}
+.laborable{color:green;font-weight:bold;}
+.festivo{color:red;font-weight:bold;}
+button{cursor:pointer;}
+</style>
+</head>
+<body>
+
+<h1>Cambio de Turnos</h1>
+
+<!-- LOGIN -->
+<div id="loginDiv">
+<h2>Login</h2>
+<label>Matrícula: <input id="matricula"></label>
+<label>Contraseña: <input id="password" type="password"></label>
+<button id="btnLogin">Entrar</button>
+</div>
+
+<!-- APP -->
+<div id="appDiv" style="display:none;">
+<h2>Bienvenido, <span id="userName"></span></h2>
+<button onclick="logout()">Cerrar sesión</button>
+
+<h2>Crear Oferta</h2>
+<label>Shift ID: <input id="shift_id"></label>
+<label>Fecha: <input type="date" id="fecha_oferta"></label>
+<label>Tipo de día: 
+<select id="tipo_dia">
+<option value="laborable">Laborable</option>
+<option value="festivo">Festivo</option>
+</select></label>
+<button onclick="crearOferta()">Crear Oferta</button>
+
+<h2>Ofertas Disponibles</h2>
+<table id="offersTable">
+<thead><tr><th>ID</th><th>Shift</th><th>Fecha</th><th>Tipo</th><th>Ofrecido por</th><th>Acción</th></tr></thead>
+<tbody></tbody>
+</table>
+
+<h2>Días Trabajados</h2>
+<table id="usersTable">
+<thead><tr><th>Matrícula</th><th>Nombre</th><th>Días Laborables</th><th>Días Festivos</th></tr></thead>
+<tbody></tbody>
+</table>
+
+<h2>Histórico</h2>
+<table id="historicoTable">
+<thead><tr><th>ID</th><th>Shift</th><th>Fecha</th><th>Tipo</th><th>Ofrecido por</th><th>Aceptado por</th><th>Estado</th></tr></thead>
+<tbody></tbody>
+</table>
+</div>
+
+<!-- Firebase -->
+<script type="module">
+import { initializeApp } from "https://www.gstatic.com/firebasejs/12.4.0/firebase-app.js";
+import { getFirestore, collection, addDoc, getDocs, updateDoc, doc, deleteDoc } from "https://www.gstatic.com/firebasejs/12.4.0/firebase-firestore.js";
+
+const firebaseConfig = {
+  apiKey: "AIzaSyDFK-RvM3hX29e7BJmVcL3iKK_mkrRtK30",
+  authDomain: "cambioturnos-e3c55.firebaseapp.com",
+  projectId: "cambioturnos-e3c55",
+  storageBucket: "cambioturnos-e3c55.firebasestorage.app",
+  messagingSenderId: "435343505577",
+  appId: "1:435343505577:web:b060f63475675dcc3311b8"
+};
+
+const app = initializeApp(firebaseConfig);
+const db = getFirestore(app);
+const usersCol = collection(db, "users");
+const offersCol = collection(db, "offers");
+
+let currentUser = null;
+
+document.getElementById("btnLogin").addEventListener("click", login);
+
+async function login() {
+    const mat = document.getElementById("matricula").value.trim();
+    const pass = document.getElementById("password").value.trim();
+    if(!mat || !pass){ alert("Introduce matrícula y contraseña"); return; }
+
+    // Buscar usuario en Firestore
+    const usersSnap = await getDocs(usersCol);
+    let user = null;
+    usersSnap.forEach(u => {
+        if(u.data().matricula === mat) user = {id:u.id, ...u.data()};
+    });
+
+    if(!user){
+        const nombre = prompt("Introduce tu nombre y apellido:");
+        if(!nombre){ alert("Debes introducir nombre y apellido"); return; }
+        const docRef = await addDoc(usersCol, {matricula: mat, nombre: nombre, password: pass, diasLaborable: 0, diasFestivo: 0});
+        user = {id: docRef.id, matricula: mat, nombre, password: pass, diasLaborable: 0, diasFestivo:0};
+    } else {
+        if(user.password !== pass){ alert("Contraseña incorrecta"); return; }
+    }
+
+    currentUser = user;
+    document.getElementById("userName").innerText = user.nombre;
+    document.getElementById("loginDiv").style.display = "none";
+    document.getElementById("appDiv").style.display = "block";
+
+    listarUsuarios();
+    listarOfertas();
+    listarHistorico();
+}
+
+function logout(){
+    currentUser = null;
+    document.getElementById("loginDiv").style.display = "block";
+    document.getElementById("appDiv").style.display = "none";
+}
+
+// Crear oferta
+async function crearOferta(){
+    if(!currentUser) return;
+    const shift_id = document.getElementById("shift_id").value.trim();
+    const fecha_oferta = document.getElementById("fecha_oferta").value;
+    const tipo_dia = document.getElementById("tipo_dia").value;
+    if(!shift_id || !fecha_oferta){ alert("Rellena shift y fecha"); return; }
+
+    // Revisar límites
+    const userDocRef = doc(db, "users", currentUser.id);
+    let userSnap = await getDocs(usersCol);
+    let u = currentUser; // simplificado, en Firestore ya está
+
+    if(tipo_dia === "laborable" && u.diasLaborable >= 7){ alert("Máximo días laborables alcanzado"); return; }
+    if(tipo_dia === "festivo" && u.diasFestivo >= 3){ alert("Máximo días festivos alcanzado"); return; }
+
+    await addDoc(offersCol, {shift_id, fecha_oferta, tipo_dia, offered_by: currentUser.matricula, offered_name: currentUser.nombre, accepted_by: null, accepted_name: null, estado:"pending"});
+    listarOfertas();
+    listarHistorico();
+    listarUsuarios();
+}
+
+// Aceptar oferta
+async function aceptarOferta(docId){
+    const offerDocRef = doc(db, "offers", docId);
+    const offerSnap = await getDocs(offersCol);
+    let offer = null;
+    offerSnap.forEach(o => { if(o.id === docId) offer = {id:o.id,...o.data()}; });
+    if(!offer || offer.estado !== "pending"){ alert("Oferta no disponible"); return; }
+
+    if(offer.tipo_dia==="laborable" && currentUser.diasLaborable>=7){ alert("Máximo laborable alcanzado"); return; }
+    if(offer.tipo_dia==="festivo" && currentUser.diasFestivo>=3){ alert("Máximo festivo alcanzado"); return; }
+
+    await updateDoc(offerDocRef, {accepted_by: currentUser.matricula, accepted_name: currentUser.nombre, estado:"accepted"});
+    listarOfertas();
+    listarHistorico();
+    listarUsuarios();
+}
+
+// Cancelar oferta
+async function cancelarOferta(docId){
+    const offerDocRef = doc(db, "offers", docId);
+    const offerSnap = await getDocs(offersCol);
+    let offer = null;
+    offerSnap.forEach(o => { if(o.id===docId) offer = {id:o.id,...o.data()}; });
+
+    if(!offer || offer.estado!=="pending"){ alert("No se puede cancelar"); return; }
+    if(offer.offered_by!==currentUser.matricula){ alert("Solo puedes cancelar tus propias ofertas"); return; }
+
+    await deleteDoc(offerDocRef);
+    listarOfertas();
+    listarHistorico();
+    listarUsuarios();
+}
+
+// Listar usuarios
+async function listarUsuarios(){
+    const tbody = document.querySelector("#usersTable tbody");
+    tbody.innerHTML = "";
+    const usersSnap = await getDocs(usersCol);
+    usersSnap.forEach(u => {
+        const data = u.data();
+        const tr = document.createElement("tr");
+        tr.innerHTML = `<td>${data.matricula}</td><td>${data.nombre}</td><td>${data.diasLaborable}</td><td>${data.diasFestivo}</td>`;
+        tbody.appendChild(tr);
+    });
+}
+
+// Listar ofertas
+async function listarOfertas(){
+    const tbody = document.querySelector("#offersTable tbody");
+    tbody.innerHTML = "";
+    const offersSnap = await getDocs(offersCol);
+    offersSnap.forEach(o => {
+        const data = o.data();
+        if(data.estado!=="pending") return;
+        const tr = document.createElement("tr");
+        tr.innerHTML = `<td>${o.id}</td><td>${data.shift_id}</td><td>${data.fecha_oferta}</td><td class="${data.tipo_dia}">${data.tipo_dia}</td>
+        <td>${data.offered_by} - ${data.offered_name}</td>
+        <td>
+        <button onclick="aceptarOferta('${o.id}')">Aceptar</button>
+        ${data.offered_by===currentUser.matricula?'<button onclick="cancelarOferta(\''+o.id+'\')">Cancelar</button>':''}
+        </td>`;
+        tbody.appendChild(tr);
+    });
+}
+
+// Listar histórico
+async function listarHistorico(){
+    const tbody = document.querySelector("#historicoTable tbody");
+    tbody.innerHTML = "";
+    const offersSnap = await getDocs(offersCol);
+    offersSnap.forEach(o => {
+        const data = o.data();
+        const acceptedText = data.accepted_by ? `${data.accepted_by} - ${data.accepted_name}` : "-";
+        const tr = document.createElement("tr");
+        tr.innerHTML = `<td>${o.id}</td><td>${data.shift_id}</td><td>${data.fecha_oferta}</td><td class="${data.tipo_dia}">${data.tipo_dia}</td>
+        <td>${data.offered_by} - ${data.offered_name}</td><td>${acceptedText}</td><td>${data.estado}</td>`;
+        tbody.appendChild(tr);
+    });
+}
+</script>
+
+</body>
+</html>
